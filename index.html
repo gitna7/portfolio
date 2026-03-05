@@ -492,24 +492,131 @@ async function loadFX(){
   }
 }
 
-/* ── 股价：FMP batch quote，一次请求全部股票，Netlify Function 服务端代理 ── */
+/* ── 股价：混合方案 ──
+   /api/price (Vercel Function→FMP) : 美股、美股ETF
+   iTick 直连                        : 日股普通股、港股、A股普通股票
+   腾讯财经 直连                      : A股ETF(15xxxx/51xxxx/16xxxx)
+   日股ETF(1655.T等)                  : 暂显示—，手动查价
+*/
 
+var ITICK_TOKEN='f109b496c9c74c2da8ce2809981a8695a62ed0c15b2e4963886f6ae0db49a0aa';
+var ITICK_BASE='https://api.itick.org';
+
+function isCNEtf(sym){
+  var bare=sym.replace(/\.(SS|SZ)$/i,'');
+  return /^(15|51|16|58)\d{4}$/.test(bare);
+}
+
+function cnRegion(sym){
+  if(sym.match(/\.SS$/i))return'SH';
+  if(sym.match(/\.SZ$/i))return'SZ';
+  var f=sym.replace(/\.(SS|SZ)$/i,'').charAt(0);
+  return(f==='6'||f==='5')?'SH':'SZ';
+}
+
+function toITickItem(sym,mkt){
+  var code,region;
+  if(mkt==='JP'){code=sym.replace(/\.T$/i,'');region='JP';}
+  else if(mkt==='HK'){code=sym.replace(/\.HK$/i,'').replace(/^0+(?=\d)/,'');region='HK';}
+  else if(mkt==='CN'){code=sym.replace(/\.(SS|SZ)$/i,'');region=cnRegion(sym);}
+  else{code=sym;region='US';}
+  return{code:code,region:region,key:sym};
+}
+
+function routeSym(sym,mkt){
+  if(mkt==='US') return'fmp';
+  if(mkt==='JP'){
+    var code=sym.replace(/\.T$/i,'');
+    return code.startsWith('1')?'skip':'itick';
+  }
+  if(mkt==='CN'&&isCNEtf(sym))return'tencent';
+  return'itick';
+}
+
+/* FMP: 美股/ETF，逐个并行 */
+async function loadFMP(syms){
+  if(!syms.length)return;
+  await Promise.all(syms.map(async function(sym){
+    try{
+      var r=await fetch('/api/price?symbols='+encodeURIComponent(sym),{signal:AbortSignal.timeout(12000)});
+      if(!r.ok)return;
+      var data=await r.json();
+      if(data[sym])PC[sym]=data[sym];
+    }catch(e){console.warn('FMP error:',sym,e.message);}
+  }));
+  console.log('FMP done:',syms.filter(function(s){return PC[s];}).join(','));
+}
+
+/* iTick: 日股/港股/A股，按region批量 */
+async function loadITick(items){
+  if(!items.length)return;
+  var groups={};
+  items.forEach(function(item){
+    if(!groups[item.region])groups[item.region]=[];
+    groups[item.region].push(item);
+  });
+  await Promise.all(Object.keys(groups).map(async function(region){
+    var batch=groups[region];
+    var codes=batch.map(function(i){return i.code;}).join(',');
+    try{
+      var r=await fetch(ITICK_BASE+'/stock/ticks?region='+region+'&codes='+encodeURIComponent(codes),{
+        headers:{'token':ITICK_TOKEN,'accept':'application/json'},
+        signal:AbortSignal.timeout(12000)
+      });
+      var d=await r.json();
+      console.log('iTick',region,':',JSON.stringify(d).slice(0,150));
+      if(d.code===0&&d.data){
+        batch.forEach(function(item){
+          var q=d.data[item.code];
+          if(q&&q.ld){
+            PC[item.key]={price:q.ld,prev:q.yc||q.ld,
+              ccy:{US:'USD',JP:'JPY',HK:'HKD',SH:'CNY',SZ:'CNY'}[region]||'USD',
+              name:q.n||item.code};
+          }
+        });
+      }
+    }catch(e){console.warn('iTick',region,'error:',e.message);}
+  }));
+}
+
+/* 腾讯财经: A股ETF */
+async function loadTencentETF(items){
+  if(!items.length)return;
+  await Promise.all(items.map(async function(h){
+    try{
+      var bare=h.sym.replace(/\.(SS|SZ)$/i,'');
+      var prefix=cnRegion(h.sym)==='SH'?'sh':'sz';
+      var r=await fetch('https://sqt.gtimg.cn/q='+prefix+bare,{signal:AbortSignal.timeout(8000)});
+      var raw=await r.text();
+      var m=raw.match(/~([^~]+)~[^~]*~([^~]+)~([^~]+)/);
+      if(m){
+        var price=parseFloat(m[2]),prev=parseFloat(m[3]);
+        if(price){PC[h.sym]={price:price,prev:prev||price,ccy:'CNY',name:m[1]||bare};
+        console.log('Tencent ETF:',h.sym,price);}
+      }
+    }catch(e){console.warn('Tencent ETF error:',h.sym,e.message);}
+  }));
+}
+
+/* 主路由 */
 async function loadPrices(syms){
   if(!syms.length)return;
-  /* FMP batch：所有symbol逗号分隔，一次请求搞定 */
-  try{
-    var url='/api/price?symbols='+encodeURIComponent(syms.join(','));
-    var r=await fetch(url,{signal:AbortSignal.timeout(15000)});
-    if(!r.ok)throw new Error('http '+r.status);
-    var data=await r.json();
-    if(data.error)throw new Error(data.error+' '+data.detail);
-    Object.keys(data).forEach(function(sym){PC[sym]=data[sym];});
-    var loaded=syms.filter(function(s){return PC[s];}).length;
-    console.log('FMP: '+loaded+'/'+syms.length+' 只');
-    syms.forEach(function(s){if(!PC[s])console.warn('no price:',s);});
-  }catch(e){
-    console.warn('price error:',e.message);
-  }
+  var fmpSyms=[],itickItems=[],tencentItems=[];
+  syms.forEach(function(sym){
+    var h=holdings.find(function(x){return x.sym===sym;});
+    if(!h)return;
+    var route=routeSym(sym,h.mkt);
+    if(route==='fmp') fmpSyms.push(sym);
+    else if(route==='tencent') tencentItems.push(h);
+    else if(route==='itick') itickItems.push(toITickItem(sym,h.mkt));
+    /* skip = 日股ETF，暂不处理 */
+  });
+  console.log('FMP:',fmpSyms,'iTick:',itickItems.map(function(i){return i.key;}),'Tencent:',tencentItems.map(function(h){return h.sym;}));
+  await Promise.all([
+    loadFMP(fmpSyms),
+    loadITick(itickItems),
+    loadTencentETF(tencentItems)
+  ]);
 }
 
 async function loadPriceSingle(sym){await loadPrices([sym]);}

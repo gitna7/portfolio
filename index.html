@@ -901,16 +901,16 @@ async function saveHolding(){
   } else {
     holdings.push({id:seq++,sym:sym,mkt:mkt,person:person,cost:cost,qty:qty,note:note});
   }
-  save();closeModal();
+  await save();closeModal();
   if(!PC[sym])await loadPriceSingle(sym);
   renderAll();
   showToast(editId?'✓ 已更新':'✓ 已添加 '+sym,'ok');
 }
 
-function delH(id){
+async function delH(id){
   if(!confirm('确定删除此持仓？'))return;
   holdings=holdings.filter(function(h){return h.id!==id;});
-  save();renderAll();showToast('已删除','');
+  await save();renderAll();showToast('已删除','');
 }
 
 var tt;

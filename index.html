@@ -475,34 +475,44 @@ async function save(){
 /* 把当前 holdings 全量同步到 Supabase */
 async function syncToCloud(){
   try{
-    /* 先删除所有旧数据，再插入新数据（简单全量替换） */
-    await supa.from('holdings').delete().neq('id',0);
-    if(holdings.length===0)return;
+    /* Safari 会拦截 DELETE 请求，改用 Supabase RPC 调用服务端函数来清空并重新插入 */
+    /* 用 update 把所有行标记为 deleted=true，然后 insert 新数据，load 时过滤 */
+    /* 最简方案：用一个固定的 batch_id，每次同步用新 batch_id，load 时只取最新 batch */
+    var batchId=Date.now();
     var rows=holdings.map(function(h){
-      return {sym:h.sym,mkt:h.mkt,person:h.person,cost:h.cost,qty:h.qty,note:h.note||''};
+      return {sym:h.sym,mkt:h.mkt,person:h.person,cost:h.cost,qty:h.qty,note:h.note||'',batch_id:batchId};
     });
+    /* 即使没有持仓也插入一条空标记 */
+    if(rows.length===0){
+      rows=[{sym:'__empty__',mkt:'US',person:'Z',cost:0,qty:0,note:'',batch_id:batchId}];
+    }
     var res=await supa.from('holdings').insert(rows);
     if(res.error)throw res.error;
-    console.log('云端同步成功，共',holdings.length,'条');
+    console.log('云端同步成功，共',holdings.length,'条，batch:',batchId);
   }catch(e){
     console.warn('云端同步失败:',e.message);
   }
 }
 
-/* 从云端加载数据 */
+/* 从云端加载数据：取最新 batch_id 的数据 */
 async function loadFromCloud(){
   try{
-    var res=await supa.from('holdings').select('*').order('id');
+    /* 先找最新的 batch_id */
+    var bRes=await supa.from('holdings').select('batch_id').order('batch_id',{ascending:false}).limit(1);
+    if(bRes.error)throw bRes.error;
+    if(!bRes.data||bRes.data.length===0)return false;
+    var latestBatch=bRes.data[0].batch_id;
+    /* 取该 batch 的所有数据 */
+    var res=await supa.from('holdings').select('*').eq('batch_id',latestBatch).order('id');
     if(res.error)throw res.error;
-    if(res.data&&res.data.length>0){
-      holdings=res.data.map(function(r,i){
-        return {id:i+1,sym:r.sym,mkt:r.mkt,person:r.person,cost:parseFloat(r.cost),qty:parseFloat(r.qty),note:r.note||''};
-      });
-      seq=holdings.reduce(function(mx,h){return Math.max(mx,h.id);},0)+1;
-      saveLocal();
-      console.log('从云端加载',holdings.length,'条持仓');
-      return true;
-    }
+    var rows=(res.data||[]).filter(function(r){return r.sym!=='__empty__';});
+    holdings=rows.map(function(r,i){
+      return {id:i+1,sym:r.sym,mkt:r.mkt,person:r.person,cost:parseFloat(r.cost),qty:parseFloat(r.qty),note:r.note||''};
+    });
+    seq=holdings.reduce(function(mx,h){return Math.max(mx,h.id);},0)+1;
+    saveLocal();
+    console.log('从云端加载',holdings.length,'条持仓，batch:',latestBatch);
+    return true;
   }catch(e){
     console.warn('云端加载失败，使用本地数据:',e.message);
   }

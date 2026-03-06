@@ -222,6 +222,7 @@ td:first-child,td:nth-child(2){text-align:left;}
   .hdr,.top,.tbl-section{padding-left:18px;padding-right:18px;}
 }
 </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -457,7 +458,56 @@ function fc(n,d){
 function fp(n){return(n==null||isNaN(n))?'—':(n>=0?'+':'')+n.toFixed(2)+'%';}
 function usd(v,c){return c==='USD'?v:c==='JPY'?v/FX.JPY:c==='CNY'?v/FX.CNY:c==='HKD'?v/FX.HKD:v;}
 function dc(n){return(n==null||isNaN(n))?'':n>=0?'up':'down';}
-function save(){localStorage.setItem('pf_v7',JSON.stringify(holdings));}
+/* ── Supabase 云端同步 ── */
+var SUPA_URL='https://pvqrxvioepssbwfoexna.supabase.co';
+var SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB2cXJ4dmlvZXBzc2J3Zm9leG5hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3NzM0NzUsImV4cCI6MjA4ODM0OTQ3NX0.Mt8NzLNgmg8JW_7IvmAslPzk9gLcp7-EuPtCxJBAlPo';
+var supa=supabase.createClient(SUPA_URL,SUPA_KEY);
+
+/* 本地缓存仍保留，作为离线备份 */
+function saveLocal(){localStorage.setItem('pf_v7',JSON.stringify(holdings));}
+
+/* 保存：写本地+云端 */
+async function save(){
+  saveLocal();
+  await syncToCloud();
+}
+
+/* 把当前 holdings 全量同步到 Supabase */
+async function syncToCloud(){
+  try{
+    /* 先删除所有旧数据，再插入新数据（简单全量替换） */
+    await supa.from('holdings').delete().neq('id',0);
+    if(holdings.length===0)return;
+    var rows=holdings.map(function(h){
+      return {sym:h.sym,mkt:h.mkt,person:h.person,cost:h.cost,qty:h.qty,note:h.note||''};
+    });
+    var res=await supa.from('holdings').insert(rows);
+    if(res.error)throw res.error;
+    console.log('云端同步成功，共',holdings.length,'条');
+  }catch(e){
+    console.warn('云端同步失败:',e.message);
+  }
+}
+
+/* 从云端加载数据 */
+async function loadFromCloud(){
+  try{
+    var res=await supa.from('holdings').select('*').order('id');
+    if(res.error)throw res.error;
+    if(res.data&&res.data.length>0){
+      holdings=res.data.map(function(r,i){
+        return {id:i+1,sym:r.sym,mkt:r.mkt,person:r.person,cost:parseFloat(r.cost),qty:parseFloat(r.qty),note:r.note||''};
+      });
+      seq=holdings.reduce(function(mx,h){return Math.max(mx,h.id);},0)+1;
+      saveLocal();
+      console.log('从云端加载',holdings.length,'条持仓');
+      return true;
+    }
+  }catch(e){
+    console.warn('云端加载失败，使用本地数据:',e.message);
+  }
+  return false;
+}
 function el(id){return document.getElementById(id);}
 function setText(id,v){var e=el(id);if(e)e.textContent=v;}
 function setVD(id,v,n){var e=el(id);if(!e)return;e.textContent=v;e.className=e.className.replace(/ ?(up|down)/g,'')+(n>=0?' up':' down');}

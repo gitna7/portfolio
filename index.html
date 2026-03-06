@@ -222,7 +222,6 @@ td:first-child,td:nth-child(2){text-align:left;}
   .hdr,.top,.tbl-section{padding-left:18px;padding-right:18px;}
 }
 </style>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -458,61 +457,45 @@ function fc(n,d){
 function fp(n){return(n==null||isNaN(n))?'—':(n>=0?'+':'')+n.toFixed(2)+'%';}
 function usd(v,c){return c==='USD'?v:c==='JPY'?v/FX.JPY:c==='CNY'?v/FX.CNY:c==='HKD'?v/FX.HKD:v;}
 function dc(n){return(n==null||isNaN(n))?'':n>=0?'up':'down';}
-/* ── Supabase 云端同步 ── */
-var SUPA_URL='https://pvqrxvioepssbwfoexna.supabase.co';
-var SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB2cXJ4dmlvZXBzc2J3Zm9leG5hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3NzM0NzUsImV4cCI6MjA4ODM0OTQ3NX0.Mt8NzLNgmg8JW_7IvmAslPzk9gLcp7-EuPtCxJBAlPo';
-var supa=supabase.createClient(SUPA_URL,SUPA_KEY);
+/* ── 云端同步：通过 Vercel Function，浏览器不直接访问 Supabase ── */
 
-/* 本地缓存仍保留，作为离线备份 */
 function saveLocal(){localStorage.setItem('pf_v7',JSON.stringify(holdings));}
 
-/* 保存：写本地+云端 */
 async function save(){
   saveLocal();
   await syncToCloud();
 }
 
-/* 把当前 holdings 全量同步到 Supabase */
 async function syncToCloud(){
   try{
-    /* Safari 会拦截 DELETE 请求，改用 Supabase RPC 调用服务端函数来清空并重新插入 */
-    /* 用 update 把所有行标记为 deleted=true，然后 insert 新数据，load 时过滤 */
-    /* 最简方案：用一个固定的 batch_id，每次同步用新 batch_id，load 时只取最新 batch */
-    var batchId=Date.now();
-    var rows=holdings.map(function(h){
-      return {sym:h.sym,mkt:h.mkt,person:h.person,cost:h.cost,qty:h.qty,note:h.note||'',batch_id:batchId};
+    var r=await fetch('/api/sync',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({holdings:holdings}),
+      signal:AbortSignal.timeout(10000)
     });
-    /* 即使没有持仓也插入一条空标记 */
-    if(rows.length===0){
-      rows=[{sym:'__empty__',mkt:'US',person:'Z',cost:0,qty:0,note:'',batch_id:batchId}];
-    }
-    var res=await supa.from('holdings').insert(rows);
-    if(res.error)throw res.error;
-    console.log('云端同步成功，共',holdings.length,'条，batch:',batchId);
+    if(!r.ok)throw new Error('http '+r.status);
+    var d=await r.json();
+    if(d.error)throw new Error(d.error);
+    console.log('云端同步成功，共',d.count,'条');
   }catch(e){
     console.warn('云端同步失败:',e.message);
   }
 }
 
-/* 从云端加载数据：取最新 batch_id 的数据 */
 async function loadFromCloud(){
   try{
-    /* 先找最新的 batch_id */
-    var bRes=await supa.from('holdings').select('batch_id').order('batch_id',{ascending:false}).limit(1);
-    if(bRes.error)throw bRes.error;
-    if(!bRes.data||bRes.data.length===0)return false;
-    var latestBatch=bRes.data[0].batch_id;
-    /* 取该 batch 的所有数据 */
-    var res=await supa.from('holdings').select('*').eq('batch_id',latestBatch).order('id');
-    if(res.error)throw res.error;
-    var rows=(res.data||[]).filter(function(r){return r.sym!=='__empty__';});
-    holdings=rows.map(function(r,i){
-      return {id:i+1,sym:r.sym,mkt:r.mkt,person:r.person,cost:parseFloat(r.cost),qty:parseFloat(r.qty),note:r.note||''};
-    });
-    seq=holdings.reduce(function(mx,h){return Math.max(mx,h.id);},0)+1;
-    saveLocal();
-    console.log('从云端加载',holdings.length,'条持仓，batch:',latestBatch);
-    return true;
+    var r=await fetch('/api/load',{signal:AbortSignal.timeout(10000)});
+    if(!r.ok)throw new Error('http '+r.status);
+    var d=await r.json();
+    if(d.error)throw new Error(d.error);
+    if(d.holdings&&d.holdings.length>0){
+      holdings=d.holdings;
+      seq=holdings.reduce(function(mx,h){return Math.max(mx,h.id);},0)+1;
+      saveLocal();
+      console.log('从云端加载',holdings.length,'条持仓');
+      return true;
+    }
   }catch(e){
     console.warn('云端加载失败，使用本地数据:',e.message);
   }

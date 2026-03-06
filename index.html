@@ -927,11 +927,13 @@ document.addEventListener('keydown',function(e){
 
 async function init(){
   renderAll();
+  /* 优先从云端加载最新持仓 */
+  var ok=await loadFromCloud();
+  if(ok)renderAll();
   await loadFX();
   var syms=[...new Set(holdings.map(function(h){return h.sym;}))];
   await loadPrices(syms);
   renderAll();
-  /* 自动刷新已去掉，改为手动刷新 */
 }
 init();
 </script>

@@ -129,8 +129,14 @@ header{background:var(--card);border-bottom:1px solid var(--border);box-shadow:v
 .filter-btn.f-pa.active{background:var(--pa);border-color:var(--pa);}
 
 .scroll-hint{display:none;font-size:10px;color:var(--textd);text-align:center;padding:4px 0;letter-spacing:.04em;}
-.tbl-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:var(--sh1);}
-.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.tbl-card{background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:var(--sh1);}
+.tbl-wrap{overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 160px);-webkit-overflow-scrolling:touch;}
+thead tr th{position:sticky;top:0;z-index:10;background:var(--s1);}
+thead tr th:first-child{position:sticky;top:0;left:0;z-index:20;background:var(--s1);width:36px;min-width:36px;max-width:36px;}
+thead tr th:nth-child(2){position:sticky;top:0;left:36px;z-index:20;background:var(--s1);}
+tbody tr td:first-child{position:sticky;left:0;z-index:5;background:var(--card);width:36px;min-width:36px;max-width:36px;}
+tbody tr td:nth-child(2){position:sticky;left:36px;z-index:5;background:var(--card);}
+tbody tr.mkt-divider td:first-child,tbody tr.mkt-divider td:nth-child(2){background:var(--s1);}
 table{width:100%;border-collapse:collapse;}
 thead tr{background:var(--s1);border-bottom:2px solid var(--border);}
 th{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--textd);padding:10px 11px;text-align:right;white-space:nowrap;cursor:pointer;user-select:none;}

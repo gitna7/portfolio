@@ -457,10 +457,16 @@ function fc(n,d){
 function fp(n){return(n==null||isNaN(n))?'—':(n>=0?'+':'')+n.toFixed(2)+'%';}
 function usd(v,c){return c==='USD'?v:c==='JPY'?v/FX.JPY:c==='CNY'?v/FX.CNY:c==='HKD'?v/FX.HKD:v;}
 function dc(n){return(n==null||isNaN(n))?'':n>=0?'up':'down';}
-/* ── 云端同步：通过 Vercel Function，浏览器不直接访问 Supabase ── */
+/* ── 云端同步：通过 Vercel Function，浏览器不直接访问 Supabase ──
+   原则：
+   1. 页面初始化只从云端加载，绝不触发 sync
+   2. 只有用户主动操作（添加/编辑/删除）才触发 sync
+   3. 云端数据永远优先，本地 LocalStorage 只作离线备份
+*/
 
 function saveLocal(){localStorage.setItem('pf_v7',JSON.stringify(holdings));}
 
+/* save() 只在用户主动操作时调用 */
 async function save(){
   saveLocal();
   await syncToCloud();
@@ -477,15 +483,19 @@ async function syncToCloud(){
     if(!r.ok)throw new Error('http '+r.status);
     var d=await r.json();
     if(d.error)throw new Error(d.error);
-    console.log('云端同步成功，共',d.count,'条');
+    console.log('云端同步成功，共',d.count,'条，batch:',d.batch_id);
   }catch(e){
     console.warn('云端同步失败:',e.message);
   }
 }
 
+/* loadFromCloud：只读取，绝不触发写入 */
 async function loadFromCloud(){
   try{
-    var r=await fetch('/api/load',{signal:AbortSignal.timeout(10000)});
+    var r=await fetch('/api/load',{
+      signal:AbortSignal.timeout(10000),
+      cache:'no-store'
+    });
     if(!r.ok)throw new Error('http '+r.status);
     var d=await r.json();
     if(d.error)throw new Error(d.error);
@@ -496,6 +506,7 @@ async function loadFromCloud(){
       console.log('从云端加载',holdings.length,'条持仓');
       return true;
     }
+    console.log('云端暂无数据，使用本地');
   }catch(e){
     console.warn('云端加载失败，使用本地数据:',e.message);
   }
@@ -919,10 +930,12 @@ document.addEventListener('keydown',function(e){
 });
 
 async function init(){
+  /* 1. 先用本地数据快速渲染（避免白屏） */
   renderAll();
-  /* 优先从云端加载最新持仓 */
+  /* 2. 从云端加载最新数据（只读，不触发sync） */
   var ok=await loadFromCloud();
   if(ok)renderAll();
+  /* 3. 加载汇率和股价 */
   await loadFX();
   var syms=[...new Set(holdings.map(function(h){return h.sym;}))];
   await loadPrices(syms);

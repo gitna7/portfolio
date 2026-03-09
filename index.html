@@ -557,15 +557,15 @@ async function loadFX(){
    JP / HK / CN   → Yahoo Finance（服务端调用，无CORS问题）
 */
 
-/* 所有股票统一走 /api/price，每次并行逐个请求 */
+/* 所有股票统一走 /api/price，传入 sym 和 mkt，服务端自动补后缀 */
 async function loadPrices(syms){
   if(!syms.length)return;
   await Promise.all(syms.map(async function(sym){
+    var h=holdings.find(function(x){return x.sym===sym;});
+    if(!h)return;
     try{
-      var r=await fetch('/api/price?symbols='+encodeURIComponent(sym),{
-        signal:AbortSignal.timeout(15000),
-        cache:'no-store'
-      });
+      var url='/api/price?symbols='+encodeURIComponent(sym)+'&mkt='+encodeURIComponent(h.mkt);
+      var r=await fetch(url,{signal:AbortSignal.timeout(15000),cache:'no-store'});
       if(!r.ok)return;
       var data=await r.json();
       if(data[sym])PC[sym]=data[sym];

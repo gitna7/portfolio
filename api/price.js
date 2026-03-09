@@ -60,30 +60,51 @@ async function fetchFinnhub(sym) {
   return null;
 }
 
-function isUS(sym) {
-  return !sym.endsWith('.T') && !sym.endsWith('.HK') && !sym.endsWith('.SS') && !sym.endsWith('.SZ');
-}
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  const symbols = (req.query.symbols || '').split(',').map(s=>s.trim()).filter(Boolean);
-  if (!symbols.length) return res.status(400).json({ error: 'no symbols' });
+  const rawSymbols = (req.query.symbols || '').split(',').map(s=>s.trim()).filter(Boolean);
+  const mkt = (req.query.mkt || '').toUpperCase();
+  if (!rawSymbols.length) return res.status(400).json({ error: 'no symbols' });
 
-  const results = await Promise.all(symbols.map(async sym => {
+  const results = await Promise.all(rawSymbols.map(async rawSym => {
     let data = null;
-    if (isUS(sym)) {
+
+    if (mkt === 'US') {
       /* 美股：FMP first, Finnhub fallback */
-      data = await fetchFMP(sym);
-      if (!data) data = await fetchFinnhub(sym);
-    } else {
-      /* 日股/港股/A股：Yahoo Finance */
+      data = await fetchFMP(rawSym);
+      if (!data) data = await fetchFinnhub(rawSym);
+    } else if (mkt === 'JP') {
+      /* 日股：自动补 .T 后缀 */
+      const sym = rawSym.endsWith('.T') ? rawSym : rawSym + '.T';
       data = await fetchYahoo(sym);
+    } else if (mkt === 'HK') {
+      /* 港股：自动补前导零到4位 + .HK */
+      let code = rawSym.replace(/\.HK$/i, '');
+      code = code.padStart(4, '0');
+      const sym = code + '.HK';
+      data = await fetchYahoo(sym);
+    } else if (mkt === 'CN') {
+      /* A股：自动补 .SS 或 .SZ */
+      let sym = rawSym;
+      if (!rawSym.match(/\.(SS|SZ)$/i)) {
+        const first = rawSym.charAt(0);
+        sym = rawSym + (first === '6' || first === '5' ? '.SS' : '.SZ');
+      }
+      data = await fetchYahoo(sym);
+    } else {
+      /* 未知市场：直接试 Yahoo，再试 FMP */
+      data = await fetchYahoo(rawSym);
+      if (!data) {
+        data = await fetchFMP(rawSym);
+        if (!data) data = await fetchFinnhub(rawSym);
+      }
     }
-    return { sym, data };
+
+    return { sym: rawSym, data };
   }));
 
   const out = {};
   results.forEach(({ sym, data }) => { if (data) out[sym] = data; });
-  console.log('returned:', Object.keys(out).length, '/', symbols.length);
+  console.log('returned:', Object.keys(out).length, '/', rawSymbols.length);
   return res.status(200).json(out);
 }
